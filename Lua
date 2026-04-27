@@ -1,0 +1,741 @@
+local HttpService = game:GetService("HttpService")
+local CONFIG_FILE = "lainee_config.json"
+local Saved = {}
+
+if readfile and isfile and isfile(CONFIG_FILE) then
+    pcall(function()
+        Saved = HttpService:JSONDecode(readfile(CONFIG_FILE))
+    end)
+end
+
+local function SaveConfig()
+    if writefile then
+        writefile(CONFIG_FILE,HttpService:JSONEncode(Saved))
+    end
+end
+
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local lp = Players.LocalPlayer
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "LaineeHub"
+ScreenGui.Parent = CoreGui
+ScreenGui.ResetOnSpawn = false
+
+--------------------------------------------------------------------------- Color Palette
+local COLORS = {
+    MainBG = Color3.fromRGB(10, 10, 10),   
+    TabBG = Color3.fromRGB(20, 20, 20),     
+    Border = Color3.fromRGB(255, 0, 0),      
+    TextActive = Color3.fromRGB(255, 0, 0),  
+    TextInactive = Color3.fromRGB(120, 120, 120),
+    RowBG = Color3.fromRGB(25, 25, 25)
+}
+-------------------------------------------------------------------------
+-- UI CORE ENGINE
+-------------------------------------------------------------------------
+local function create(class, props)
+    local obj = Instance.new(class)
+    for k, v in pairs(props) do if k ~= "Parent" then obj[k] = v end end
+    obj.Parent = props.Parent
+    return obj
+end-------------------------------------------------------------------------
+-- SAFE FOLLOW MODULE (Lock Target)
+-------------------------------------------------------------------------
+local SafeFollow = {
+    Enabled = false,
+    Locked = false,
+    FOLLOW_DISTANCE = 6,
+    lastMove = 0,
+    gui = nil,
+    btn = nil,
+    targetChar = nil,
+    heartbeatConn = nil,
+    charAddedConn = nil
+}
+
+-- Function to create the Safe Follow UI
+local function createSafeFollowUI()
+    SafeFollow.gui = Instance.new("ScreenGui")
+    SafeFollow.gui.Name = "SafeFollowUI"
+    SafeFollow.gui.ResetOnSpawn = false
+    SafeFollow.gui.Enabled = false
+    SafeFollow.gui.Parent = CoreGui
+
+    SafeFollow.btn = Instance.new("TextButton")
+    SafeFollow.btn.Size = UDim2.new(0, 120, 0, 40)
+    SafeFollow.btn.Position = UDim2.new(0.5, -60, 0.8, 0)
+    SafeFollow.btn.Text = "LOCK"
+    SafeFollow.btn.Font = Enum.Font.GothamBold
+    SafeFollow.btn.TextSize = 14
+    SafeFollow.btn.TextColor3 = Color3.new(1, 1, 1)
+    SafeFollow.btn.BackgroundColor3 = Color3.fromRGB(43, 160, 235)
+    SafeFollow.btn.AutoButtonColor = true
+    SafeFollow.btn.Parent = SafeFollow.gui
+
+    local uiCorner = Instance.new("UICorner")
+    uiCorner.CornerRadius = UDim.new(0, 8)
+    uiCorner.Parent = SafeFollow.btn
+
+    -- Dragging functionality
+    local dragging, dragInput, dragStart, startPos
+
+    local function update(input)
+        local delta = input.Position - dragStart
+        SafeFollow.btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+
+    SafeFollow.btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = SafeFollow.btn.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    SafeFollow.btn.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+
+    -- Toggle button functionality
+    SafeFollow.btn.MouseButton1Click:Connect(function()
+        SafeFollow.Locked = not SafeFollow.Locked
+        if SafeFollow.Locked then
+            SafeFollow.btn.Text = "LOCK"
+            SafeFollow.btn.BackgroundColor3 = Color3.fromRGB(255, 65, 65)
+        else
+            SafeFollow.btn.Text = "LOCK"
+            SafeFollow.btn.BackgroundColor3 = Color3.fromRGB(43, 160, 235)
+        end
+    end)
+
+    task.delay(1,function()
+        if active then
+            callback(true)
+        end
+    end)
+end
+
+-- Function to get nearest player
+local function getNearestPlayer(character, hrp)
+    local nearest, dist = nil, math.huge
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local d = (p.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
+            if d < dist then
+                dist = d
+                nearest = p.Character
+            end
+        end
+    end
+    return nearest
+end
+
+-- Function to start Safe Follow
+local function startSafeFollow()
+    if SafeFollow.heartbeatConn then
+        SafeFollow.heartbeatConn:Disconnect()
+    end
+
+    SafeFollow.heartbeatConn = RunService.Heartbeat:Connect(function()
+        if not SafeFollow.Enabled or not SafeFollow.Locked then
+            return
+        end
+
+        local character = lp.Character
+        if not character then return end
+
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        local hum = character:FindFirstChild("Humanoid")
+
+        if not hrp or not hum then return end
+
+        -- Aqui definimos a velocidade para 55
+        hum.Walk  = 55
+
+        if tick() - SafeFollow.lastMove < 0.15 then return end
+        SafeFollow.lastMove = tick()
+
+        -- If no target or target is invalid, get nearest
+        if not SafeFollow.targetChar or not SafeFollow.targetChar.Parent then
+            SafeFollow.targetChar = getNearestPlayer(character, hrp)
+            return
+        end
+
+        local trgHRP = SafeFollow.targetChar:FindFirstChild("HumanoidRootPart")
+        local trgHum = SafeFollow.targetChar:FindFirstChild("Humanoid")
+
+        if not trgHRP or not trgHum or trgHum.Health <= 0 then
+            SafeFollow.targetChar = getNearestPlayer(character, hrp)
+            return
+        end
+
+        local direction = (trgHRP.Position - hrp.Position)
+        direction = Vector3.new(direction.X, 0, direction.Z)
+
+        if direction.Magnitude > 0 then
+            local moveDistance = math.min(direction.Magnitude, SafeFollow.FOLLOW_DISTANCE)
+            local goalPos = hrp.Position + direction.Unit * moveDistance
+            hum:MoveTo(goalPos)
+        end
+    end)
+
+    task.delay(1,function()
+        if active then
+            callback(true)
+        end
+    end)
+end
+
+-- Function to enable Safe Follow
+local function enableSafeFollow()
+    if SafeFollow.Enabled then return end
+
+    SafeFollow.Enabled = true
+
+    -- Create UI if it doesn't exist
+    if not SafeFollow.gui then
+        createSafeFollowUI()
+    end
+
+    SafeFollow.gui.Enabled = true
+
+    -- Reset locked state
+    SafeFollow.Locked = false
+    if SafeFollow.btn then
+        SafeFollow.btn.Text = "LOCK"
+        SafeFollow.btn.BackgroundColor3 = Color3.fromRGB(43, 160, 235)
+    end
+
+    -- Start the follow logic
+    startSafeFollow()
+
+    -- Handle character added
+    SafeFollow.charAddedConn = lp.CharacterAdded:Connect(function(c)
+        local hum = c:WaitForChild("Humanoid", 5)
+        if hum then
+            hum.AutoRotate = true
+        end
+    end)
+
+    -- Set current character's auto rotate
+    if lp.Character and lp.Character:FindFirstChild("Humanoid") then
+        lp.Character.Humanoid.AutoRotate = true
+    end
+end
+
+-- Function to disable Safe Follow
+local function disableSafeFollow()
+    if not SafeFollow.Enabled then return end
+
+    SafeFollow.Enabled = false
+    SafeFollow.Locked = false
+
+    -- Hide UI
+    if SafeFollow.gui then
+        SafeFollow.gui.Enabled = false
+    end
+
+    -- Disconnect connections
+    if SafeFollow.heartbeatConn then
+        SafeFollow.heartbeatConn:Disconnect()
+        SafeFollow.heartbeatConn = nil
+    end
+
+    if SafeFollow.charAddedConn then
+        SafeFollow.charAddedConn:Disconnect()
+        SafeFollow.charAddedConn = nil
+    end
+
+    -- Reset target
+    SafeFollow.targetChar = nil
+
+    -- Reset auto rotate
+    if lp.Character and lp.Character:FindFirstChild("Humanoid") then
+        lp.Character.Humanoid.AutoRotate = true
+    end
+end
+
+
+local ToggleIcon = create("TextButton", {
+    Size = UDim2.new(0, 60, 0, 60),
+    Position = UDim2.new(0.05, 0, 0.2, 0),
+
+    BackgroundColor3 = Color3.fromRGB(43,160,235),
+    Text = "",
+
+    Parent = ScreenGui
+})
+
+create("UICorner", {
+    CornerRadius = UDim.new(0,6),
+    Parent = ToggleIcon
+})
+
+create("UIStroke", {
+    Color = Color3.fromRGB(255,255,255),
+    Thickness = 1.2,
+    Parent = ToggleIcon
+})
+
+-- Container das linhas
+local LineContainer = Instance.new("Frame")
+LineContainer.Size = UDim2.new(0.6,0,0.5,0)
+LineContainer.Position = UDim2.new(0.2,0,0.25,0)
+LineContainer.BackgroundTransparency = 1
+LineContainer.Parent = ToggleIcon
+
+local layout = Instance.new("UIListLayout")
+layout.FillDirection = Enum.FillDirection.Vertical
+layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+layout.VerticalAlignment = Enum.VerticalAlignment.Center
+layout.Padding = UDim.new(0,4) -- espaço pequeno entre linhas
+layout.Parent = LineContainer
+
+-- função para criar linha
+local function createLine()
+    local line = Instance.new("Frame")
+    line.Size = UDim2.new(1,0,0,5) -- linhas grandes
+    line.BackgroundColor3 = Color3.fromRGB(255,255,255)
+    line.BorderSizePixel = 0
+    line.Parent = LineContainer
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1,0)
+    corner.Parent = line
+end
+
+createLine()
+createLine()
+createLine()
+
+
+local MainFrame = create("Frame", {
+    Size = UDim2.new(0, 220, 0, 260), -- interface menor
+    Position = UDim2.new(0.04, 0, 0.40, 0), -- lado esquerdo mais centralizado
+    BackgroundColor3 = COLORS.MainBG,
+    BackgroundTransparency = 0.2,
+    Visible = false,
+    Parent = ScreenGui
+})
+
+create("UICorner", {
+    CornerRadius = UDim.new(0, 12),
+    Parent = MainFrame
+})
+
+-- SEM CONTORNO NA INTERFACE
+
+-- HEADER
+local Header = create("Frame", {
+    Size = UDim2.new(1,0,0,40),
+    BackgroundTransparency = 1,
+    Parent = MainFrame
+})
+
+create("TextLabel", {
+    Text = "MauroCabsV1",
+    TextColor3 = Color3.fromRGB(85,170,255), -- azul claro igual botão
+    Font = "GothamBold",
+    TextSize = 16,
+    Size = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Parent = Header
+})
+
+
+
+
+local TabContainer = create("Frame", {
+    Size = UDim2.new(0.92, 0, 0, 30), Position = UDim2.new(0.04, 0, 0.13, 0),
+    BackgroundColor3 = COLORS.TabBG, Parent = MainFrame
+})
+create("UICorner", {CornerRadius = UDim.new(0, 6), Parent = TabContainer})
+local TabList = create("UIListLayout", {FillDirection = "Horizontal", HorizontalAlignment = "Center", Parent = TabContainer})
+
+local PageContainer = create("Frame", {
+    Size = UDim2.new(1, 0, 0.75, 0), Position = UDim2.new(0, 0, 0.22, 0),
+    BackgroundTransparency = 1, Parent = MainFrame
+})
+
+local HttpService = game:GetService("HttpService")
+
+local Pages = {}
+local TabButtons = {}
+
+local function CreatePage(name)
+    local Page = create("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Visible = false,
+        ScrollBarThickness = 0,
+        AutomaticCanvasSize = "Y",
+        Parent = PageContainer
+    })
+
+    create("UIListLayout", {
+        HorizontalAlignment = "Center",
+        Padding = UDim.new(0, 8),
+        Parent = Page
+    })
+
+    Pages[name] = Page
+
+    local TabBtn = create("TextButton", {
+        Size = UDim2.new(0.25, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Text = name,
+        TextColor3 = COLORS.TextInactive,
+        Font = "GothamBold",
+        TextSize = 10,
+        Parent = TabContainer
+    })
+
+    TabBtn.MouseButton1Click:Connect(function()
+        for _, p in pairs(Pages) do
+            p.Visible = false
+        end
+
+        for _, b in pairs(TabButtons) do
+            b.TextColor3 = COLORS.TextInactive
+        end
+
+        Page.Visible = true
+        TabBtn.TextColor3 = COLORS.TextActive
+    end)
+
+    TabButtons[name] = TabBtn
+end
+
+
+local function AddToggle(pageName, labelText, default, callback)
+    local active = Saved[labelText] ~= nil and Saved[labelText] or default
+
+    local Row = create("Frame", {
+        Size = UDim2.new(0.92, 0, 0, 50),
+        BackgroundColor3 = COLORS.RowBG,
+        BackgroundTransparency = 0.5,
+        Parent = Pages[pageName]
+    })
+
+    create("UICorner", {CornerRadius = UDim.new(0, 8), Parent = Row})
+    create("UIStroke", {Color = Color3.fromRGB(255,255,255), Thickness = 1, Transparency = 0, Parent = Row})
+
+    create("TextLabel", {
+        Text = labelText,
+        Size = UDim2.new(0.6, 0, 1, 0),
+        Position = UDim2.new(0.05, 0, 0, 0),
+        TextColor3 = Color3.new(1,1,1),
+        Font = "GothamBold",
+        TextSize = 13,
+        BackgroundTransparency = 1,
+        TextXAlignment = "Left",
+        Parent = Row
+    })
+
+    local TglBg = create("Frame", {
+        Size = UDim2.new(0, 42, 0, 20),
+        Position = UDim2.new(0.95, -42, 0.5, -10),
+        BackgroundColor3 = active and COLORS.Border or Color3.fromRGB(40,45,55),
+        Parent = Row
+    })
+
+    create("UICorner", {CornerRadius = UDim.new(1,0), Parent = TglBg})
+
+    local Circle = create("Frame", {
+        Size = UDim2.new(0,16,0,16),
+        Position = active and UDim2.new(0.55,0,0.1,0) or UDim2.new(0.1,0,0.1,0),
+        BackgroundColor3 = Color3.new(1,1,1),
+        Parent = TglBg
+    })
+
+    create("UICorner", {CornerRadius = UDim.new(1,0), Parent = Circle})
+
+    local Btn = create("TextButton", {
+        Size = UDim2.new(1,0,1,0),
+        BackgroundTransparency = 1,
+        Text = "",
+        Parent = Row
+    })
+
+    Btn.MouseButton1Click:Connect(function()
+        active = not active
+
+        TweenService:Create(TglBg, TweenInfo.new(0.2), {
+            BackgroundColor3 = active and COLORS.Border or Color3.fromRGB(40,45,55)
+        }):Play()
+
+        TweenService:Create(Circle, TweenInfo.new(0.2), {
+            Position = active and UDim2.new(0.55,0,0.1,0) or UDim2.new(0.1,0,0.1,0)
+        }):Play()
+
+        Saved[labelText]=active
+        SaveConfig()
+        callback(active)
+    end)
+
+    task.delay(1,function()
+        if active then
+            callback(true)
+        end
+    end)
+end
+
+
+-- CRIAR PÁGINAS
+for _, tab in ipairs({"Combat","Protect","Visual","Settings"}) do
+    CreatePage(tab)
+end
+
+TabButtons["Combat"].TextColor3 = COLORS.TextActive
+Pages["Combat"].Visible = true
+
+
+-- BOTÃO SAVE SETTINGS
+local SaveRow = create("Frame", {
+    Size = UDim2.new(0.92,0,0,50),
+    BackgroundColor3 = COLORS.RowBG,
+    BackgroundTransparency = 0.5,
+    Parent = Pages["Settings"]
+})
+
+create("UICorner",{CornerRadius = UDim.new(0,8),Parent = SaveRow})
+create("UIStroke",{Color = Color3.fromRGB(255,255,255),Thickness = 1,Parent = SaveRow})
+
+local SaveLabel = create("TextLabel",{
+    Text = "SAVE SETTINGS📸",
+    Size = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    TextColor3 = Color3.new(1,1,1),
+    Font = "GothamBold",
+    TextSize = 13,
+    Parent = SaveRow
+})
+
+local SaveBtn = create("TextButton",{
+    Size = UDim2.new(1,0,1,0),
+    BackgroundTransparency = 1,
+    Text = "",
+    Parent = SaveRow
+})
+
+SaveBtn.MouseButton1Click:Connect(function()
+
+    SaveLabel.Text = "SAVED✌🏼"
+
+    local data = {}
+
+    for name,page in pairs(Pages) do
+        data[name] = page.CanvasPosition.Y
+    end
+
+    local json = HttpService:JSONEncode(data)
+
+    if writefile then
+        writefile("hub_settings.json",json)
+    end
+
+    task.wait(3)
+
+    SaveLabel.Text = "SAVE SETTINGS📸"
+
+end)
+
+-- SAFE FOLLOW MODULE (Lock Target)
+
+local LOCK_RADIUS = 70
+local LOCK_SPEED = 50
+
+local SafeFollow = {
+Enabled = false,
+Locked = false,
+lastMove = 0,
+gui = nil,
+btn = nil,
+targetChar = nil,
+heartbeatConn = nil,
+charAddedConn = nil,
+
+att = nil,
+lv = nil,
+gyro = nil
+
+}
+
+-- Function to create the Safe Follow UI
+local function createSafeFollowUI()
+
+SafeFollow.gui = Instance.new("ScreenGui")
+SafeFollow.gui.Name = "SafeFollowUI"
+SafeFollow.gui.ResetOnSpawn = false
+SafeFollow.gui.Enabled = false
+SafeFollow.gui.Parent = CoreGui
+
+local savedPos = Saved.LockPos
+
+SafeFollow.btn = Instance.new("TextButton")
+SafeFollow.btn.Size = UDim2.new(0,120,0,40)
+
+if savedPos then
+    SafeFollow.btn.Position = UDim2.new(savedPos.XS,savedPos.XO,savedPos.YS,savedPos.YO)
+else
+    SafeFollow.btn.Position = UDim2.new(0.5,-60,0.8,0)
+end
+
+SafeFollow.btn.Text = "LOCK"
+SafeFollow.btn.Font = Enum.Font.GothamBold
+SafeFollow.btn.TextSize = 14
+SafeFollow.btn.TextColor3 = Color3.new(1,1,1)
+SafeFollow.btn.BackgroundColor3 = Color3.fromRGB(43,160,235)
+SafeFollow.btn.Parent = SafeFollow.gui
+
+local uiCorner = Instance.new("UICorner")
+uiCorner.CornerRadius = UDim.new(0,8)
+uiCorner.Parent = SafeFollow.btn
+
+
+-- seta ^
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0,18,0,18)
+toggleBtn.Position = UDim2.new(1,-20,0,2)
+toggleBtn.Text = "^"
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 14
+toggleBtn.TextColor3 = Color3.new(1,1,1)
+toggleBtn.BackgroundTransparency = 1
+toggleBtn.Parent = SafeFollow.btn
+
+
+-- botão Save
+local saveBtn = Instance.new("TextButton")
+saveBtn.Size = UDim2.new(0,120,0,25)
+saveBtn.Position = UDim2.new(0,0,1,4)
+saveBtn.Text = "Save"
+saveBtn.Visible = false
+saveBtn.Font = Enum.Font.Gotham
+saveBtn.TextSize = 13
+saveBtn.TextColor3 = Color3.new(1,1,1)
+saveBtn.BackgroundColor3 = Color3.fromRGB(50,50,50)
+saveBtn.Parent = SafeFollow.btn
+
+local corner3 = Instance.new("UICorner")
+corner3.Parent = saveBtn
+
+
+-- mostrar/esconder botão Save
+toggleBtn.MouseButton1Click:Connect(function()
+    saveBtn.Visible = not saveBtn.Visible
+end)
+
+
+-- salvar posição
+saveBtn.MouseButton1Click:Connect(function()
+
+    local pos = SafeFollow.btn.Position
+
+    Saved.LockPos = {
+        XS = pos.X.Scale,
+        XO = pos.X.Offset,
+        YS = pos.Y.Scale,
+        YO = pos.Y.Offset
+    }
+
+    SaveConfig()
+
+end)
+
+
+-- Drag system
+local dragging, dragInput, dragStart, startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    SafeFollow.btn.Position =
+        UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+end
+
+SafeFollow.btn.InputBegan:Connect(function(input)
+
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = true
+        dragStart = input.Position
+        startPos = SafeFollow.btn.Position
+
+        input.Changed:Connect(function()
+
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+
+        end)
+    end
+end)
+
+SafeFollow.btn.InputChanged:Connect(function(input)
+
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+
+    if input == dragInput and dragging then
+        update(input)
+    end
+
+end)
+
+
+-- Toggle button
+SafeFollow.btn.MouseButton1Click:Connect(function()
+
+    SafeFollow.Locked = not SafeFollow.Locked
+
+    if SafeFollow.Locked then
+        SafeFollow.btn.BackgroundColor3 = Color3.fromRGB(255,65,65)
+    else
+        SafeFollow.btn.BackgroundColor3 = Color3.fromRGB(43,160,235)
+    end
+
+end)
+
+end
+
+-- Get nearest player
+local function getNearestPlayer()
+
+local char = lp.Character
+if not char then return nil end
+
+local hrp = char:FindFirstChild("HumanoidRootPart")
+if not hrp t
